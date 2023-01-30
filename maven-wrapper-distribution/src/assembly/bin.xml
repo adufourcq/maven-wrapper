@@ -38,7 +38,7 @@ under the License.
   </dependencySets>
   <files>
     <file>
-      <source>src/resources/mvnw.cmd</source>
+      <source>src/resources/mvnw.ps1</source>
       <outputDirectory>.</outputDirectory>
       <lineEnding>dos</lineEnding>
       <fileMode>0644</fileMode>
