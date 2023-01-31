@@ -42,6 +42,25 @@ Param (
 	$RemainingParameters
 )
 
+# useful functions
+function Test-DotMvn-Directory-Exists {
+	[OutputType([bool])]
+	Param (
+		[Parameter(Mandatory, Position = 0)]
+		[ValidateNotNullOrEmpty()]
+		[string]$Path
+	)
+	$private:DotMvnFolderPath = Join-Path -Path $Path -ChildPath '.mvn'
+	$private:DotMvnFolderExists = Test-Path $DotMvnFolderPath -PathType Container
+	if ($DotMvnFolderExists) {
+		Write-Debug -Message "$DotMvnFolderPath exists"
+	}
+ else {
+		Write-Debug -Message "$DotMvnFolderPath does not exist"
+	}
+	return $DotMvnFolderExists
+}
+
 # get environment variables values
 $private:MavenProjectBasedir = $env:MAVEN_BASEDIR
 $private:SkipRc = $(Test-Path -Path 'env:MAVEN_SKIP_RC')
@@ -83,36 +102,30 @@ Write-Verbose "Found java.exe: $JavaExe"
 if (!$MavenProjectBasedir) {
 	$MavenProjectBasedir = Get-Location
 }
-Write-Debug -Message "Initial Maven project basedir: $MavenProjectBasedir"
+Write-Debug -Message "Initialize the Maven project basedir as the current location: $MavenProjectBasedir"
 
-# get initial project base dir drive path
-$private:InitialMavenProjectBaseDirDrive = (Resolve-Path $MavenProjectBasedir).Drive.Root
-
-# check if the ".mvn" directory is in the initial project base dir
-# if not, check the parent folder and so on
-while (-not (Test-DotMvn-Folder-Exists $MavenProjectBasedir) -and -not ($InitialMavenProjectBaseDirDrive -eq $MavenProjectBasedir)) {
+# check if we are at the drive root or if the ".mvn" directory is in the current directory
+# if not, update the project base dir to the parent directory of the current one
+while (-not ($MavenProjectBasedir -eq '') -and -not (Test-DotMvn-Directory-Exists $MavenProjectBasedir)) {
 	$MavenProjectBasedir = Split-Path $MavenProjectBasedir -Parent
-	Write-Debug -Message "New Maven project basedir: $MavenProjectBasedir"
+	Write-Debug -Message "New Maven project basedir to check: $MavenProjectBasedir"
 }
 
-# if no ".mvn" directory exist in the last checked directory, fall back to the current folder
-if (-not (Test-DotMvn-Folder-Exists $MavenProjectBasedir)) {
-	$MavenProjectBasedir = Get-Location
+# Raise an error if we reach the drive root and no ".mvn" directory were found
+if ($MavenProjectBasedir -eq '') {
+	Write-Error -Message 'A .mvn directory is mandatory in the current directory or its parents directories'
+	exit 1
 }
-Write-Verbose "Final Maven project basedir: $MavenProjectBasedir"
+Write-Verbose "Maven project basedir: $MavenProjectBasedir"
 
 # get .mvn directory's files content if it exists
 $private:JavaConfigMavenProps = @()
 #$private:WrapperUrl = 'https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/@@project.version@@/maven-wrapper-@@project.version@@.jar'
 $private:WrapperUrl = 'https://repo.maven.apache.org/maven2/org/apache/maven/wrapper/maven-wrapper/3.1.1/maven-wrapper-3.1.1.jar'
-$private:WrapperSha256Sum
+$private:WrapperSha256Sum = $null
 $private:MavenProjectDotMvnDir = Join-Path -Path $MavenProjectBasedir -ChildPath '.mvn'
 $private:MavenWrapperPath = Join-Path -Path $MavenProjectDotMvnDir -ChildPath 'wrapper'
 $private:MavenWrapperPropertiesFilePath = Join-Path -Path $MavenWrapperPath -ChildPath 'maven-wrapper.properties'
-if (-not (Test-DotMvn-Folder-Exists $MavenProjectBasedir)) {
-	Write-Error -Message 'The .mvn directory is mandatory'
-	exit 1
-}
 
 if (-not (Test-Path -Path $MavenWrapperPath) -or -not (Test-Path -Path $MavenWrapperPropertiesFilePath -PathType Leaf)) {
 	Write-Error -Message 'The maven-wrapper.properties file is mandatory'
@@ -171,26 +184,31 @@ else {
 	}
 
 	try {
-		[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+		$private:TempFileName = [System.IO.Path]::GetTempFileName()
 		$private:ProxyUrl = ([System.Net.WebRequest]::GetSystemWebproxy()).GetProxy($WrapperUrl)
 		$private:WebRequestArguments = @{
 			Method  = "Get"
 			Uri     = $WrapperUrl
-			OutFile = $MavenWrapperJarPath
+			OutFile = $TempFileName
 		}
 		if ($ProxyUrl) {
 			$WebRequestArguments["Proxy"] = $ProxyUrl
 			$WebRequestArguments["ProxyUseDefaultCredentials"]
+		} else {
+			$WebRequestArguments["NoProxy"]
 		}
 		if ($CredentialForBasicAuthentication) {
 			$WebRequestArguments["Credential"] = $CredentialForBasicAuthentication
 		}
 
-		# Create the wrapper folder if it does not exist
-		New-Item -Path $MavenWrapperPath -ItemType directory
-
-		# Get jar
+		# Get jar in a temporary file
+		[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 		Invoke-WebRequest @WebRequestArguments
+
+		# Copy temporary file to destination, if it's still not there
+		if (-not (Test-Path -Path $MavenWrapperJarPath -PathType Leaf)) {
+			Move-Item -Path $TempFileName -Destination $MavenWrapperJarPath -Force
+		}
 
 		Write-Verbose -Message "Finished downloading: $MavenWrapperJarPath"
 	}
@@ -231,22 +249,4 @@ if (-not $SkipRc) {
 # pause the script if BatchPause is set to 'on'
 if ($BatchPause -and $BatchPause.ToLower() -eq 'on') {
 	$private:null = Read-Host -Prompt "Press the Enter key to continue..."
-}
-
-function Test-DotMvn-Folder-Exists {
-	[OutputType([bool])]
-	Param (
-		[Parameter(Mandatory, Position = 0)]
-		[ValidateNotNullOrEmpty()]
-		[string]$Path
-	)
-	$private:DotMvnFolderPath = Join-Path -Path $Path -ChildPath '.mvn'
-	$private:DotMvnFolderExists = Test-Path $DotMvnFolderPath -PathType Container
-	if ($DotMvnFolderExists) {
-		Write-Debug -Message "$DotMvnFolderPath exists"
-	}
- else {
-		Write-Debug -Message "$DotMvnFolderPath does not exist"
-	}
-	return $DotMvnFolderExists
 }
