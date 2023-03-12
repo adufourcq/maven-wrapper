@@ -33,21 +33,22 @@ import java.util.Map;
 import java.util.Properties;
 
 import org.apache.maven.Maven;
-import org.apache.maven.artifact.Artifact;
-import org.apache.maven.artifact.resolver.ArtifactResolutionRequest;
-import org.apache.maven.artifact.resolver.ArtifactResolutionResult;
-import org.apache.maven.execution.MavenExecutionRequest;
 import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
-import org.apache.maven.repository.RepositorySystem;
 import org.apache.maven.settings.Mirror;
 import org.apache.maven.settings.Settings;
 import org.codehaus.plexus.archiver.UnArchiver;
 import org.codehaus.plexus.components.io.fileselectors.FileSelector;
+import org.eclipse.aether.RepositorySystem;
+import org.eclipse.aether.artifact.Artifact;
+import org.eclipse.aether.artifact.DefaultArtifact;
+import org.eclipse.aether.resolution.ArtifactRequest;
+import org.eclipse.aether.resolution.ArtifactResolutionException;
+import org.eclipse.aether.resolution.ArtifactResult;
 
 import static org.apache.maven.shared.utils.logging.MessageUtils.buffer;
 
@@ -68,9 +69,19 @@ public class WrapperMojo extends AbstractMojo {
     /**
      * The version of Maven to require, default value is the Runtime version of Maven.
      * Can be any valid release above 2.0.9
+     *
+     * @since 3.0.0
      */
     @Parameter(property = "maven")
     private String mavenVersion;
+
+    /**
+     * The version of Maven Daemon to require.
+     *
+     * @since 3.2.0
+     */
+    @Parameter(property = "mvnd")
+    private String mvndVersion;
 
     /**
      * Options are:
@@ -81,15 +92,20 @@ public class WrapperMojo extends AbstractMojo {
      *   <dd>precompiled and packaged code</dd>
      *   <dt>source</dt>
      *   <dd>Java source code, will be compiled on the fly</dd>
+     *   <dt>only-script</dt>
+     *   <dd>the new lite implementation of mvnw/mvnw.cmd scripts downloads the maven directly and skips maven-wrapper.jar - since 3.2.0</dd>
      * </dl>
-     *
      * Value will be used as classifier of the downloaded file
+     *
+     * @since 3.0.0
      */
     @Parameter(defaultValue = "bin", property = "type")
     private String distributionType;
 
     /**
      * Include <code>mvnwDebug*</code> scripts?
+     *
+     * @since 3.0.0
      */
     @Parameter(defaultValue = "false", property = "includeDebug")
     private boolean includeDebugScript;
@@ -97,6 +113,8 @@ public class WrapperMojo extends AbstractMojo {
     /**
      * The expected SHA-256 checksum of the <i>maven-wrapper.jar</i> that is
      * used to load the configured Maven distribution.
+     *
+     * @since 3.2.0
      */
     @Parameter(property = "wrapperSha256Sum")
     private String wrapperSha256Sum;
@@ -104,6 +122,8 @@ public class WrapperMojo extends AbstractMojo {
     /**
      * The expected SHA-256 checksum of the Maven distribution that is
      * executed by the installed wrapper.
+     *
+     * @since 3.2.0
      */
     @Parameter(property = "distributionSha256Sum")
     private String distributionSha256Sum;
@@ -111,6 +131,8 @@ public class WrapperMojo extends AbstractMojo {
     /**
      * Determines if the Maven distribution should be downloaded
      * on every execution of the Maven wrapper.
+     *
+     * @since 3.2.0
      */
     @Parameter(defaultValue = "false", property = "alwaysDownload")
     private boolean alwaysDownload;
@@ -118,6 +140,8 @@ public class WrapperMojo extends AbstractMojo {
     /**
      * Determines if the Maven distribution should be unpacked
      * on every execution of the Maven wrapper.
+     *
+     * @since 3.2.0
      */
     @Parameter(defaultValue = "false", property = "alwaysUnpack")
     private boolean alwaysUnpack;
@@ -152,6 +176,11 @@ public class WrapperMojo extends AbstractMojo {
 
     @Override
     public void execute() throws MojoExecutionException, MojoFailureException {
+        if (mvndVersion != null && mvndVersion.length() > 0 && !"only-script".equals(distributionType)) {
+            throw new MojoExecutionException("maven-wrapper with type=" + distributionType
+                    + " cannot work with mvnd, please set type to 'only-script'.");
+        }
+
         mavenVersion = getVersion(mavenVersion, Maven.class, "org.apache.maven/maven-core");
         String wrapperVersion = getVersion(null, this.getClass(), "org.apache.maven.plugins/maven-wrapper-plugin");
 
@@ -185,34 +214,25 @@ public class WrapperMojo extends AbstractMojo {
     }
 
     private Artifact downloadWrapperDistribution(String wrapperVersion) throws MojoExecutionException {
-        Artifact artifact = repositorySystem.createArtifactWithClassifier(
+
+        Artifact artifact = new DefaultArtifact(
                 WRAPPER_DISTRIBUTION_GROUP_ID,
                 WRAPPER_DISTRIBUTION_ARTIFACT_ID,
-                wrapperVersion,
+                distributionType,
                 WRAPPER_DISTRIBUTION_EXTENSION,
-                distributionType);
+                wrapperVersion);
 
-        MavenExecutionRequest executionRequest = session.getRequest();
+        ArtifactRequest request = new ArtifactRequest();
+        request.setRepositories(session.getCurrentProject().getRemotePluginRepositories());
+        request.setArtifact(artifact);
 
-        ArtifactResolutionRequest resolutionRequest = new ArtifactResolutionRequest()
-                .setArtifact(artifact)
-                .setLocalRepository(session.getLocalRepository())
-                .setRemoteRepositories(session.getCurrentProject().getPluginArtifactRepositories())
-                .setOffline(executionRequest.isOffline())
-                .setForceUpdate(executionRequest.isUpdateSnapshots());
+        try {
+            ArtifactResult artifactResult = repositorySystem.resolveArtifact(session.getRepositorySession(), request);
+            return artifactResult.getArtifact();
 
-        ArtifactResolutionResult resolveResult = repositorySystem.resolve(resolutionRequest);
-
-        if (!resolveResult.isSuccess()) {
-            if (executionRequest.isShowErrors()) {
-                for (Exception e : resolveResult.getExceptions()) {
-                    getLog().error(e.getMessage(), e);
-                }
-            }
-            throw new MojoExecutionException("artifact: " + artifact + " not resolved.");
+        } catch (ArtifactResolutionException e) {
+            throw new MojoExecutionException("artifact: " + artifact + " not resolved.", e);
         }
-
-        return artifact;
     }
 
     private void unpack(Artifact artifact, Path targetFolder) {
@@ -232,7 +252,7 @@ public class WrapperMojo extends AbstractMojo {
      * No need to look for other properties, restore them, respecting comments, etc.
      *
      * @param wrapperVersion the wrapper version
-     * @param targetFolder the folder containing the wrapper.properties
+     * @param targetFolder   the folder containing the wrapper.properties
      * @throws MojoExecutionException if writing fails
      */
     private void replaceProperties(String wrapperVersion, Path targetFolder) throws MojoExecutionException {
@@ -242,6 +262,12 @@ public class WrapperMojo extends AbstractMojo {
                 + mavenVersion + "-bin.zip";
         String wrapperUrl = repoUrl + "/org/apache/maven/wrapper/maven-wrapper/" + wrapperVersion + "/maven-wrapper-"
                 + wrapperVersion + ".jar";
+
+        if (mvndVersion != null && mvndVersion.length() > 0) {
+            // now maven-mvnd is not published to the central repo.
+            distributionUrl = "https://archive.apache.org/dist/maven/mvnd/" + mvndVersion + "/maven-mvnd-" + mvndVersion
+                    + "-bin.zip";
+        }
 
         Path wrapperPropertiesFile = targetFolder.resolve("maven-wrapper.properties");
 
