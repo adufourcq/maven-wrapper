@@ -26,15 +26,15 @@ assert !(new File(basedir,'mvnwDebug.cmd').exists())
 def propertiesFile = new File(basedir,'.mvn/wrapper/maven-wrapper.properties')
 assert propertiesFile.exists()
 
-def props = new Properties()
+Properties props = new Properties()
 propertiesFile.withInputStream {
     props.load(it)
 }
-
+assert props.wrapperVersion.equals(wrapperCurrentVersion)
 assert props.distributionUrl.endsWith('/org/apache/maven/apache-maven/3.6.3/apache-maven-3.6.3-bin.zip')
 
 log = new File(basedir, 'build.log').text
 // check "mvn wrapper:wrapper" output
-assert log.contains('[INFO] Unpacked bin type wrapper distribution org.apache.maven.wrapper:maven-wrapper-distribution:zip:bin:')
+assert log.contains('[INFO] Unpacked only-script type wrapper distribution org.apache.maven.wrapper:maven-wrapper-distribution:zip:only-script:')
 // check "mvnw -v" output
 assert log.contains('Apache Maven 3.6.3')

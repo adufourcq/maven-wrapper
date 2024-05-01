@@ -21,13 +21,13 @@ package org.apache.maven.plugins.wrapper;
 import javax.inject.Inject;
 
 import java.io.BufferedWriter;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Properties;
@@ -37,6 +37,7 @@ import org.apache.maven.execution.MavenSession;
 import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.MojoFailureException;
+import org.apache.maven.plugins.annotations.Component;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
 import org.apache.maven.settings.Mirror;
@@ -55,14 +56,13 @@ import static org.apache.maven.shared.utils.logging.MessageUtils.buffer;
 /**
  * Unpacks the maven-wrapper distribution files to the current project source tree.
  *
- * @author Robert Scholte
  * @since 3.0.0
  */
-@Mojo(name = "wrapper", aggregator = true, requiresDirectInvocation = true)
+@Mojo(name = "wrapper", aggregator = true, requiresProject = false)
 public class WrapperMojo extends AbstractMojo {
     private static final String MVNW_REPOURL = "MVNW_REPOURL";
 
-    private static final String DEFAULT_REPOURL = "https://repo.maven.apache.org/maven2";
+    protected static final String DEFAULT_REPOURL = "https://repo.maven.apache.org/maven2";
 
     // CONFIGURATION PARAMETERS
 
@@ -88,18 +88,18 @@ public class WrapperMojo extends AbstractMojo {
      * <dl>
      *   <dt>script</dt>
      *   <dd>only mvnw scripts</dd>
-     *   <dt>bin (default)</dt>
+     *   <dt>bin</dt>
      *   <dd>precompiled and packaged code</dd>
      *   <dt>source</dt>
      *   <dd>Java source code, will be compiled on the fly</dd>
-     *   <dt>only-script</dt>
+     *   <dt>only-script (default)</dt>
      *   <dd>the new lite implementation of mvnw/mvnw.cmd scripts downloads the maven directly and skips maven-wrapper.jar - since 3.2.0</dd>
      * </dl>
      * Value will be used as classifier of the downloaded file
      *
      * @since 3.0.0
      */
-    @Parameter(defaultValue = "bin", property = "type")
+    @Parameter(defaultValue = "only-script", property = "type")
     private String distributionType;
 
     /**
@@ -148,15 +148,8 @@ public class WrapperMojo extends AbstractMojo {
 
     // READONLY PARAMETERS
 
-    @Parameter(defaultValue = "${session}", readonly = true, required = true)
+    @Component
     private MavenSession session;
-
-    @Parameter(defaultValue = "${settings}", readonly = true, required = true)
-    private Settings settings;
-
-    // Waiting for https://github.com/eclipse/sisu.inject/pull/39 PathTypeConverter
-    @Parameter(defaultValue = "${project.basedir}", readonly = true, required = true)
-    private File basedir;
 
     // CONSTANTS
 
@@ -181,14 +174,15 @@ public class WrapperMojo extends AbstractMojo {
                     + " cannot work with mvnd, please set type to 'only-script'.");
         }
 
+        Path baseDir = Paths.get(session.getRequest().getBaseDirectory());
         mavenVersion = getVersion(mavenVersion, Maven.class, "org.apache.maven/maven-core");
         String wrapperVersion = getVersion(null, this.getClass(), "org.apache.maven.plugins/maven-wrapper-plugin");
 
         final Artifact artifact = downloadWrapperDistribution(wrapperVersion);
-        final Path wrapperDir = createDirectories(basedir.toPath().resolve(".mvn/wrapper"));
+        final Path wrapperDir = createDirectories(baseDir.resolve(".mvn/wrapper"));
 
         cleanup(wrapperDir);
-        unpack(artifact, basedir.toPath());
+        unpack(artifact, baseDir);
         replaceProperties(wrapperVersion, wrapperDir);
     }
 
@@ -293,11 +287,14 @@ public class WrapperMojo extends AbstractMojo {
 
         try (BufferedWriter out = Files.newBufferedWriter(wrapperPropertiesFile, StandardCharsets.UTF_8)) {
             out.append(String.format(Locale.ROOT, license));
+            out.append("wrapperVersion=" + wrapperVersion + System.lineSeparator());
             out.append("distributionUrl=" + distributionUrl + System.lineSeparator());
             if (distributionSha256Sum != null) {
                 out.append("distributionSha256Sum=" + distributionSha256Sum + System.lineSeparator());
             }
-            out.append("wrapperUrl=" + wrapperUrl + System.lineSeparator());
+            if (!distributionType.equals("only-script")) {
+                out.append("wrapperUrl=" + wrapperUrl + System.lineSeparator());
+            }
             if (wrapperSha256Sum != null) {
                 out.append("wrapperSha256Sum=" + wrapperSha256Sum + System.lineSeparator());
             }
@@ -332,28 +329,39 @@ public class WrapperMojo extends AbstractMojo {
      * Determine the repository URL to download Wrapper and Maven from.
      */
     private String getRepoUrl() {
-        // default
-        String repoUrl = DEFAULT_REPOURL;
-
         // adapt to also support MVNW_REPOURL as supported by mvnw scripts from maven-wrapper
-        String mvnwRepoUrl = System.getenv(MVNW_REPOURL);
-        if (mvnwRepoUrl != null && !mvnwRepoUrl.isEmpty()) {
-            repoUrl = mvnwRepoUrl;
-            getLog().debug("Using repo URL from " + MVNW_REPOURL + " environment variable.");
-        }
-        // otherwise mirror from settings
-        else if (settings.getMirrors() != null && !settings.getMirrors().isEmpty()) {
-            for (Mirror current : settings.getMirrors()) {
-                if ("*".equals(current.getMirrorOf())) {
-                    repoUrl = current.getUrl();
-                    break;
-                }
-            }
-            getLog().debug("Using repo URL from * mirror in settings file.");
-        }
+        String envRepoUrl = System.getenv(MVNW_REPOURL);
+        final String repoUrl = determineRepoUrl(envRepoUrl, session.getSettings());
 
         getLog().debug("Determined repo URL to use as " + repoUrl);
 
         return repoUrl;
+    }
+
+    protected String determineRepoUrl(String envRepoUrl, Settings settings) {
+
+        if (envRepoUrl != null && !envRepoUrl.trim().isEmpty() && envRepoUrl.length() > 4) {
+            String repoUrl = envRepoUrl.trim();
+
+            if (repoUrl.endsWith("/")) {
+                repoUrl = repoUrl.substring(0, repoUrl.length() - 1);
+            }
+
+            getLog().debug("Using repo URL from " + MVNW_REPOURL + " environment variable.");
+
+            return repoUrl;
+        }
+
+        // otherwise mirror from settings
+        if (settings.getMirrors() != null && !settings.getMirrors().isEmpty()) {
+            for (Mirror current : settings.getMirrors()) {
+                if ("*".equals(current.getMirrorOf())) {
+                    getLog().debug("Using repo URL from * mirror in settings file.");
+                    return current.getUrl();
+                }
+            }
+        }
+
+        return DEFAULT_REPOURL;
     }
 }

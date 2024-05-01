@@ -22,7 +22,10 @@ assert new File(basedir,'mvnw').exists()
 assert new File(basedir,'mvnw.cmd').exists()
 assert !(new File(basedir,'mvnwDebug').exists())
 assert !(new File(basedir,'mvnwDebug.cmd').exists())
-assert new File(basedir,'.mvn/wrapper/maven-wrapper.properties').exists()
+
+wrapperProperties = new File(basedir,'.mvn/wrapper/maven-wrapper.properties')
+assert wrapperProperties.exists()
+assert wrapperProperties.text.contains('wrapperUrl')
 
 log = new File(basedir, 'build.log').text
 // check "mvn wrapper:wrapper" output
@@ -32,3 +35,9 @@ assert log.contains('[INFO] Unpacked script type wrapper distribution org.apache
 assert log.contains("Couldn't find ")
 assert log.contains(", downloading it ...")
 assert new File(basedir,'.mvn/wrapper/maven-wrapper.jar').exists()
+
+Properties props = new Properties()
+new File(basedir,'.mvn/wrapper/maven-wrapper.properties').withInputStream {
+    props.load(it)
+}
+assert props.wrapperVersion.equals(wrapperCurrentVersion)

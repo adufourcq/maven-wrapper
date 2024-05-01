@@ -18,21 +18,14 @@
  * under the License.
  */
 
-assert new File(basedir,'mvnw').exists()
-assert new File(basedir,'mvnw.cmd').exists()
-assert !(new File(basedir,'mvnwDebug').exists())
-assert !(new File(basedir,'mvnwDebug.cmd').exists())
-assert new File(basedir,'.mvn/wrapper/maven-wrapper.properties').exists()
-assert new File(basedir,'.mvn/wrapper/maven-wrapper.jar').exists()
-
 log = new File(basedir, 'build.log').text
-// check "mvn wrapper:wrapper" output
-assert log.contains('[INFO] Unpacked bin type wrapper distribution org.apache.maven.wrapper:maven-wrapper-distribution:zip:bin:')
-// check "mvnw -v" output
-assert log.contains('Apache Maven ')
+boolean isWindows = System.getProperty('os.name', 'unknown').startsWith('Windows')
 
-Properties props = new Properties()
-new File(basedir,'.mvn/wrapper/maven-wrapper.properties').withInputStream {
-    props.load(it)
+if (isWindows) {
+    // on Windows: just the fact it failed is enough
+    assert log.contains('Exception calling "DownloadFile"')
+} else {
+    // on non-Windows: verify clear messages as well
+    // cover all methods: point is, there is no Maven version 0.0.0
+    assert log.contains('wget: Failed to fetch') || log.contains('curl: Failed to fetch') || log.contains('- Error downloading:')
 }
-assert props.wrapperVersion.equals(wrapperCurrentVersion)
